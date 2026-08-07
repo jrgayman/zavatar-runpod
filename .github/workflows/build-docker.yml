@@ -25,7 +25,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
+  build-sadtalker:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -38,8 +38,10 @@ jobs:
       - name: Set engine variable
         id: vars
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "engine=${{ inputs.engine }}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.engine }}" = "sadtalker" ]; then
+            echo "engine=sadtalker" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "engine=sadtalker" >> $GITHUB_OUTPUT
           else
             echo "engine=sadtalker" >> $GITHUB_OUTPUT
           fi
@@ -60,16 +62,60 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ steps.vars.outputs.engine }}-latest
-            type=sha,prefix=${{ steps.vars.outputs.engine }}-,format=short
+            type=raw,value=sadtalker-latest
+            type=sha,prefix=sadtalker-,format=short
 
-      - name: Build and push Docker image
+      - name: Build and push SadTalker image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           build-args: |
-            RENDER_ENGINE=${{ steps.vars.outputs.engine }}
+            RENDER_ENGINE=sadtalker
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-liveportrait:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    needs: build-sadtalker
+    if: github.event_name == 'workflow_dispatch' && inputs.engine == 'liveportrait'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=liveportrait-latest
+            type=sha,prefix=liveportrait-,format=short
+
+      - name: Build and push LivePortrait image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            RENDER_ENGINE=liveportrait
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
