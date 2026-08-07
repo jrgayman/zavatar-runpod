@@ -9,6 +9,11 @@ The edge function pipeline never changes — it always sends audio_url + portrai
 and receives video_url back. Swapping engines is a Docker config change only.
 """
 
+import sys
+print("[zavatar] Python process started", flush=True)
+print(f"[zavatar] Python: {sys.version}", flush=True)
+print(f"[zavatar] sys.path: {sys.path}", flush=True)
+
 import os
 import time
 import base64
@@ -16,18 +21,14 @@ import urllib.request
 import urllib.error
 import shutil
 
+print("[zavatar] Core imports OK", flush=True)
+
 import runpod
 
-from engines.sadtalker_engine import SadTalkerEngine
-from engines.liveportrait_engine import LivePortraitEngine
+print(f"[zavatar] runpod {runpod.__version__ if hasattr(runpod, '__version__') else '?'} imported OK", flush=True)
 
 OUTPUT_DIR = "/app/outputs"
 INPUT_DIR = "/app/inputs"
-
-ENGINES = {
-    "sadtalker": SadTalkerEngine,
-    "liveportrait": LivePortraitEngine,
-}
 
 
 def ensure_dirs():
@@ -82,13 +83,18 @@ def upload_to_storage(local_path, job_id, fmt):
 
 def get_engine(job_input):
     engine_name = os.environ.get("RENDER_ENGINE", "sadtalker").lower()
-    engine_cls = ENGINES.get(engine_name)
-    if not engine_cls:
+    print(f"[zavatar] Loading engine: {engine_name}", flush=True)
+
+    if engine_name == "sadtalker":
+        from engines.sadtalker_engine import SadTalkerEngine
+        return SadTalkerEngine()
+    elif engine_name == "liveportrait":
+        from engines.liveportrait_engine import LivePortraitEngine
+        return LivePortraitEngine()
+    else:
         raise RuntimeError(
-            f"Unknown RENDER_ENGINE '{engine_name}'. "
-            f"Available: {', '.join(ENGINES.keys())}"
+            f"Unknown RENDER_ENGINE '{engine_name}'. Use 'sadtalker' or 'liveportrait'."
         )
-    return engine_cls()
 
 
 def handler(job):
@@ -166,4 +172,5 @@ def handler(job):
     return {"video_url": video_url}
 
 
+print("[zavatar] All imports OK, starting RunPod serverless loop...", flush=True)
 runpod.serverless.start({"handler": handler})
