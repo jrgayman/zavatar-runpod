@@ -1,154 +1,128 @@
 """
-LivePortrait engine — higher-quality portrait animation.
+LivePortrait engine - higher-quality portrait animation via video-driven rendering.
 
-LivePortrait (KwaiVGI, July 2024) produces smoother, more realistic facial
-animation than SadTalker, but it is video-driven, not audio-driven. It animates
-a portrait by copying motion from a driving video, not from an audio file.
+LivePortrait (KwaiVGI) produces smoother, more realistic facial animation than
+SadTalker, but it is video-driven, not audio-driven. It animates a portrait by
+copying motion from a driving video, not from an audio file.
 
-To use LivePortrait for talking-head generation from audio, we need a two-step
+To use LivePortrait for talking-head generation from audio, we use a two-stage
 pipeline:
-  1. Audio-to-motion: extract facial motion coefficients from the audio
-     (head pose, expression, lip sync) using an audio-driven model.
-  2. Motion-to-video: feed those motion coefficients to LivePortrait, which
-     renders the final high-quality talking-head video.
+  1. SadTalker pass: audio + portrait -> rough talking-head video (provides
+     lip-sync and head motion driven by the audio signal).
+  2. LivePortrait pass: original portrait + SadTalker video as driving input ->
+     high-quality re-rendered talking-head video.
 
-This module is a stub. When activated, it will:
-  - Use SadTalker's audio-to-3DMM module (or a standalone audio-to-motion model)
-    to generate motion coefficients from the input audio.
-  - Convert those coefficients to LivePortrait's driving format.
-  - Run LivePortrait inference to render the final video.
-
-Setup (when ready to activate):
-  1. Clone LivePortrait into the Docker image:
-     git clone https://github.com/KwaiVGI/LivePortrait.git /app/LivePortrait
-  2. Download LivePortrait checkpoints (animal=False, retinaface=True):
-     See https://github.com/KwaiVGI/LivePortrait#-download-pretrained-weights
-  3. Install LivePortrait dependencies (insightface, onnxruntime-gpu, etc.)
-  4. Set RENDER_ENGINE=liveportrait in the RunPod template environment.
-  5. Rebuild and push the Docker image.
-
-The edge function needs NO changes — it still sends audio_url + portrait_url
-and receives video_url back.
+The SadTalker video does not need to look good - it just needs the right motion.
+LivePortrait extracts motion from it and re-renders onto the source portrait.
 """
 
 import os
 import glob
 import subprocess
+import shutil
 
 from engines.base_engine import BaseEngine
 
-WORK_DIR = "/app/LivePortrait"
+SADTALKER_DIR = "/app/SadTalker"
+LIVEPORTRAIT_DIR = "/app/LivePortrait"
 
 
 class LivePortraitEngine(BaseEngine):
     name = "liveportrait"
 
     def generate(self, audio_path, portrait_path, output_dir, quality="720p"):
-        if not os.path.isdir(WORK_DIR):
+        if not os.path.isdir(LIVEPORTRAIT_DIR):
             raise RuntimeError(
                 "LivePortrait is not installed in this Docker image. "
-                "Set RENDER_ENGINE=sadtalker, or build the image with "
-                "LivePortrait support (see engines/liveportrait_engine.py "
-                "docstring for setup instructions)."
+                "Build with RENDER_ENGINE=liveportrait."
+            )
+        if not os.path.isdir(SADTALKER_DIR):
+            raise RuntimeError(
+                "SadTalker is required as the audio-to-motion bridge but is "
+                "not installed in this Docker image."
             )
 
-        # Step 1: Audio -> motion coefficients
-        # Uses SadTalker's audio-to-3DMM module to generate head pose and
-        # expression coefficients from the audio file.
-        motion_path = os.path.join(output_dir, "motion_coefficients.pkl")
-        self._audio_to_motion(audio_path, motion_path, quality)
+        # Stage 1: SadTalker produces a rough talking-head video from audio.
+        driving_video = self._sadtalker_pass(audio_path, portrait_path, output_dir, quality)
 
-        # Step 2: Motion -> driving video
-        # Convert 3DMM coefficients to a driving video that LivePortrait can
-        # consume (a video of facial landmarks / motion fields).
-        driving_video_path = os.path.join(output_dir, "driving.mp4")
-        self._motion_to_driving_video(motion_path, driving_video_path, quality)
+        # Stage 2: LivePortrait re-renders with higher quality.
+        final_video = self._liveportrait_pass(portrait_path, driving_video, output_dir, quality)
 
-        # Step 3: LivePortrait inference
-        # Run LivePortrait with the source portrait and driving video to
-        # produce the final high-quality talking-head video.
-        self._liveportrait_inference(portrait_path, driving_video_path, output_dir, quality)
+        return final_video
+
+    def _sadtalker_pass(self, audio_path, portrait_path, output_dir, quality):
+        """Run SadTalker to produce a driving video with audio-synced motion."""
+        sadtalker_out = os.path.join(output_dir, "sadtalker_pass")
+        os.makedirs(sadtalker_out, exist_ok=True)
+
+        cmd = [
+            "python", "inference.py",
+            "--driven_audio", audio_path,
+            "--source_image", portrait_path,
+            "--result_dir", sadtalker_out,
+            "--enhancer", "gfpgan",
+            "--expression_scale", "1.0",
+            "--still",
+            "--preprocess", "full",
+        ]
+
+        if quality in ("720p", "1080p"):
+            cmd.extend(["--size", "512"])
+        else:
+            cmd.extend(["--size", "256"])
+
+        print(f"[liveportrait] Stage 1 - SadTalker driving video: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd, cwd=SADTALKER_DIR, capture_output=True, text=True, timeout=300
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"SadTalker pass failed: {result.stderr[-500:]}")
 
         video_files = (
-            glob.glob(os.path.join(output_dir, "*.mp4"))
-            + glob.glob(os.path.join(output_dir, "*.webm"))
+            glob.glob(os.path.join(sadtalker_out, "*.mp4"))
+            + glob.glob(os.path.join(sadtalker_out, "*.webm"))
+            + glob.glob(os.path.join(sadtalker_out, "**", "*.mp4"), recursive=True)
+            + glob.glob(os.path.join(sadtalker_out, "**", "*.webm"), recursive=True)
         )
         if not video_files:
-            raise RuntimeError("No video file generated by LivePortrait")
-
+            raise RuntimeError("SadTalker pass produced no video")
         video_files.sort(key=os.path.getmtime, reverse=True)
+        print(f"[liveportrait] Driving video: {video_files[0]}")
         return video_files[0]
 
-    def _audio_to_motion(self, audio_path, output_path, quality):
-        """
-        Generate facial motion coefficients from audio.
+    def _liveportrait_pass(self, portrait_path, driving_video, output_dir, quality):
+        """Run LivePortrait with the source portrait and SadTalker driving video."""
+        lp_out = os.path.join(output_dir, "liveportrait_pass")
+        os.makedirs(lp_out, exist_ok=True)
 
-        Uses SadTalker's audio-to-3DMM module (already installed in the Docker
-        image) to extract head pose and expression coefficients synchronized
-        to the audio.
-        """
-        sadtalker_dir = "/app/SadTalker"
-        cmd = [
-            "python", "-c",
-            f"""
-import sys
-sys.path.insert(0, "{sadtalker_dir}")
-from sadtalker.audio2coeff import Audio2Coeff
-# Initialize and run audio-to-coefficient generation
-# This produces a .pkl file with 3DMM motion coefficients
-a2c = Audio2Coeff()
-a2c.gen(audio_path="{audio_path}", save_dir="{os.path.dirname(output_path)}", img_size=512)
-""",
-        ]
-        print(f"[liveportrait] Audio-to-motion: {cmd}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode != 0:
-            raise RuntimeError(f"Audio-to-motion failed: {result.stderr[-500:]}")
-
-    def _motion_to_driving_video(self, motion_path, output_path, quality):
-        """
-        Convert 3DMM motion coefficients to a driving video.
-
-        Renders the motion coefficients as a sequence of facial landmark
-        frames that LivePortrait can use as driving input.
-        """
-        cmd = [
-            "python", "-c",
-            f"""
-import sys, pickle, numpy as np, cv2, imageio
-sys.path.insert(0, "{WORK_DIR}")
-# Load coefficients, render each frame as a face mesh image
-# Save as mp4 for LivePortrait consumption
-coeff = pickle.load(open("{motion_path}", "rb"))
-writer = imageio.get_writer("{output_path}", fps=25)
-for frame in self._render_coeff_frame(coeff):
-    writer.append_data(frame)
-writer.close()
-""",
-        ]
-        print(f"[liveportrait] Motion-to-driving-video")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode != 0:
-            raise RuntimeError(f"Motion-to-video failed: {result.stderr[-500:]}")
-
-    def _liveportrait_inference(self, portrait_path, driving_video_path, output_dir, quality):
-        """
-        Run LivePortrait inference.
-
-        Uses the LivePortrait inference script with the source portrait and
-        driving video to produce the final high-quality animated video.
-        """
-        size = "512" if quality == "720p" else "768" if quality == "1080p" else "256"
         cmd = [
             "python", "inference.py",
             "-s", portrait_path,
-            "-d", driving_video_path,
-            "--output_dir", output_dir,
+            "-d", driving_video,
+            "-o", lp_out,
             "--flag_force_half_precision",
         ]
-        print(f"[liveportrait] Running: {' '.join(cmd)}")
+
+        print(f"[liveportrait] Stage 2 - LivePortrait inference: {' '.join(cmd)}")
         result = subprocess.run(
-            cmd, cwd=WORK_DIR, capture_output=True, text=True, timeout=180
+            cmd, cwd=LIVEPORTRAIT_DIR, capture_output=True, text=True, timeout=300
         )
         if result.returncode != 0:
             raise RuntimeError(f"LivePortrait inference failed: {result.stderr[-500:]}")
+
+        video_files = (
+            glob.glob(os.path.join(lp_out, "*.mp4"))
+            + glob.glob(os.path.join(lp_out, "*.webm"))
+            + glob.glob(os.path.join(lp_out, "**", "*.mp4"), recursive=True)
+            + glob.glob(os.path.join(lp_out, "**", "*.webm"), recursive=True)
+        )
+        if not video_files:
+            raise RuntimeError("LivePortrait pass produced no video")
+        video_files.sort(key=os.path.getmtime, reverse=True)
+
+        # Clean up the intermediate SadTalker video to save disk.
+        sadtalker_out = os.path.join(output_dir, "sadtalker_pass")
+        shutil.rmtree(sadtalker_out, ignore_errors=True)
+
+        print(f"[liveportrait] Final video: {video_files[0]}")
+        return video_files[0]
