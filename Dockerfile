@@ -96,6 +96,9 @@ RUN wget -q --show-progress "https://huggingface.co/camenduru/SadTalker/resolve/
 
 # -- LivePortrait (optional engine) ------------------------------------
 # Installed when RENDER_ENGINE=liveportrait build arg is passed.
+# LivePortrait is video-driven (not audio-driven), so the engine uses a
+# two-stage pipeline: SadTalker generates a rough driving video from the
+# audio, then LivePortrait re-renders it at higher quality.
 RUN if [ "$RENDER_ENGINE" = "liveportrait" ]; then \
       git clone https://github.com/KwaiVGI/LivePortrait.git /app/LivePortrait \
       && cd /app/LivePortrait \
