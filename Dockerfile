@@ -39,6 +39,7 @@ RUN pip install --no-cache-dir \
     gradio==3.50.2 \
     pydub==0.25.1 \
     torchaudio==2.1.2 \
+    safetensors>=0.4.0 \
     --extra-index-url https://download.pytorch.org/whl/cu121
 
 # -- SadTalker checkpoints (from HuggingFace mirrors) ------------------
