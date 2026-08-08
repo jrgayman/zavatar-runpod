@@ -99,12 +99,51 @@ RUN wget -q --show-progress "https://huggingface.co/camenduru/SadTalker/resolve/
 # LivePortrait is video-driven (not audio-driven), so the engine uses a
 # two-stage pipeline: SadTalker generates a rough driving video from the
 # audio, then LivePortrait re-renders it at higher quality.
+#
+# Each step is a separate RUN so a failure tells us exactly which step
+# broke instead of a generic "exit code 2" from a chained && block.
+
+# Step 1: clone the repo
 RUN if [ "$RENDER_ENGINE" = "liveportrait" ]; then \
-      git clone https://github.com/KwaiVGI/LivePortrait.git /app/LivePortrait \
-      && cd /app/LivePortrait \
-      && pip install --no-cache-dir -r requirements.txt \
-      && python scripts/download_weights.py --models all \
-      && pip install --no-cache-dir insightface onnxruntime-gpu; \
+      git clone https://github.com/KwaiVGI/LivePortrait.git /app/LivePortrait; \
+    fi
+
+# Step 2: install LivePortrait's Python deps.
+# --no-deps prevents pip from upgrading numpy/torch/etc. that SadTalker
+# already pinned.  We then install the genuinely new deps separately.
+# We filter out lines from requirements.txt that would upgrade torch/numpy
+# to prevent breaking SadTalker's pinned versions.
+RUN if [ "$RENDER_ENGINE" = "liveportrait" ]; then \
+      cd /app/LivePortrait \
+      && pip install --no-cache-dir huggingface_hub \
+      && grep -v -iE '^(torch|torchvision|torchaudio|numpy|opencv|numba|librosa|scikit-image|imageio|gfpgan|gradio|pydub)\b' requirements.txt > /tmp/lp_filtered_reqs.txt \
+      && pip install --no-cache-dir --no-deps -r /tmp/lp_filtered_reqs.txt \
+      && pip install --no-cache-dir \
+           scipy scikit-learn albumentations omegaconf lpips \
+           pandas matplotlib trimesh fvcore pyglet PyOpenGL \
+           cmake dill future packaging prettytable pyparsing pyqtgraph \
+           yapf colorama types-Pillow types-requests \
+           types-python-dateutil types-pytz types-protobuf types-setuptools; \
+    fi
+
+# Step 3: install insightface + onnxruntime-gpu (needed for face detection)
+# onnxruntime-gpu 1.18.1 is compatible with CUDA 12.1 / cuDNN 8.x
+RUN if [ "$RENDER_ENGINE" = "liveportrait" ]; then \
+      pip install --no-cache-dir onnxruntime-gpu==1.18.1 \
+      && pip install --no-cache-dir insightface==0.7.3; \
+    fi
+
+# Step 4: download pretrained weights via huggingface_hub
+# Using the Python API instead of scripts/download_weights.py for
+# reliability — the script path/interface can change between releases.
+# Retries up to 3 times in case of transient network issues.
+RUN if [ "$RENDER_ENGINE" = "liveportrait" ]; then \
+      for i in 1 2 3; do \
+        python -c "from huggingface_hub import snapshot_download; \
+                   snapshot_download('KwaiVGI/LivePortrait', \
+                     local_dir='/app/LivePortrait/pretrained_weights')" \
+        && break || echo "Attempt $i failed, retrying..." && sleep 10; \
+      done; \
     fi
 
 # -- RunPod serverless -------------------------------------------------
