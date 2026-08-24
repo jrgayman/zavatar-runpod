@@ -1,0 +1,86 @@
+{
+  "name": "zimple-desktop",
+  "version": "1.1.30",
+  "description": "Zimple desktop client for Windows, macOS, and Linux",
+  "main": "dist/main.js",
+  "author": "Tech Innovation, LLC",
+  "license": "PROPRIETARY",
+  "scripts": {
+    "dev": "tsc && electron dist/main.js",
+    "build": "tsc",
+    "pack:win": "electron-builder --win",
+    "pack:mac": "electron-builder --mac",
+    "pack:linux": "electron-builder --linux",
+    "pack:all": "electron-builder --win --mac --linux"
+  },
+  "build": {
+    "appId": "app.zimple.desktop",
+    "productName": "Zimple",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.png",
+      "publisherName": "Tech Innovation, LLC"
+    },
+    "mac": {
+      "target": [
+        "pkg"
+      ],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.developer-tools",
+      "identity": "Developer ID Application: Tech Innovation, LLC",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.plist",
+      "notarize": true
+    },
+    "pkg": {
+      "identity": "Developer ID Installer: Tech Innovation, LLC",
+      "isRelocatable": false,
+      "overwriteAction": "upgrade"
+    },
+    "afterSign": "scripts/notarize.js",
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png",
+      "category": "Development"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Zimple"
+    },
+    "publish": null
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
+    "puppeteer-core": "^25.8.0",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "electron": "^33.0.0",
+    "@electron/notarize": "^2.5.0",
+    "electron-builder": "^25.0.0",
+    "typescript": "^5.5.3"
+  }
+}
